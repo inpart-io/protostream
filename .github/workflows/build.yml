@@ -1,0 +1,67 @@
+name: Maven Build and Deploy to AWS CodeArtifact
+
+on:
+  push:
+    branches:
+      - 4.2.3.P1_Actions
+  workflow_dispatch:
+
+env:
+  MVN_OPTS: "-P github --file ./pom.xml -DskipTests --batch-mode"
+
+jobs:
+  build:
+    runs-on: self-hosted
+#    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Checkout the code
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history for tags and branches
+
+      - name: Set up Maven
+        uses: stCarolas/setup-maven@v4
+        with:
+          maven-version: '3.9.6'
+
+
+      # Configure AWS credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::851725588390:role/gh-deploy-protostream
+          aws-region: "eu-west-1"
+
+      - name: Login to CodeArtifact
+        id: codeartifact
+        run: |
+          token=$(aws codeartifact get-authorization-token --domain inpart --domain-owner 851725588390 --query authorizationToken --output text)
+          url=$(aws codeartifact get-repository-endpoint --domain inpart --domain-owner 851725588390 --repository inpart-maven-releases --format maven --query repositoryEndpoint --output text)
+          # Ensure URL ends with a trailing slash
+          [[ "$url" != */ ]] && url="${url}/"
+          echo "repo_token=$token" >> $GITHUB_OUTPUT
+          echo "repo_url=$url" >> $GITHUB_OUTPUT
+          echo "Using repository URL: $url"
+
+      - name: Set up JDK and Maven settings
+        uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+          overwrite-settings: true
+          cache: 'maven'
+          server-id: inpart-maven-releases
+          server-username: MAVEN_DEPLOY_USERNAME
+          server-password: MAVEN_DEPLOY_PASSWORD
+
+      - name: Build and Deploy
+        env:
+          MAVEN_DEPLOY_USERNAME: "aws"
+          MAVEN_DEPLOY_PASSWORD: ${{ steps.codeartifact.outputs.repo_token }}
+        run: |
+          mvn $MVN_OPTS clean package deploy \
+            -DaltDeploymentRepository=inpart-maven-releases::default::${{ steps.codeartifact.outputs.repo_url }}
